@@ -37,6 +37,14 @@ if "schedule_df" not in st.session_state:
         EMPTY_SCHEDULE.copy()
     )
 
+# st.data_editorに固定keyを渡すと、次回以降のrerunで
+# 新しく渡したdata引数よりsession_state[key]の値が
+# 優先されてしまい、再検索しても表示が更新されない。
+# そのため、新しいデータをセットするたびにこの番号を
+# インクリメントし、keyを変えてウィジェットを作り直す。
+if "schedule_editor_version" not in st.session_state:
+    st.session_state.schedule_editor_version = 0
+
 
 def show_plans(plans: list[dict]) -> None:
     st.header("⑥ 検索結果")
@@ -260,6 +268,8 @@ if search_button:
             st.session_state.schedule_df = (
                 pd.DataFrame(editor_rows)
             )
+            # 新しいデータで表を作り直させるためkeyを更新する
+            st.session_state.schedule_editor_version += 1
             search_ready = True
 
             st.success(
@@ -284,7 +294,10 @@ edited_schedule = st.data_editor(
     num_rows="dynamic",
     width="stretch",
     hide_index=True,
-    key="schedule_editor",
+    key=(
+        "schedule_editor_"
+        f"{st.session_state.schedule_editor_version}"
+    ),
     column_config={
         "作品": st.column_config.TextColumn(
             "作品",
