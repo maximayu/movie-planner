@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from config import ALLOWED_DOMAINS
+from config import ALLOWED_DOMAINS, SMT_THEATER_CODES
 
 
 TIME_RANGE_PATTERN = re.compile(
@@ -30,6 +30,13 @@ DATE_PATTERNS = (
         r"(?P<month>\d{2})"
         r"(?P<day>\d{2})"
     ),
+)
+
+# SMT系（新宿ピカデリー・MOVIXさいたま等）の
+# 作品タイトル行を見分けるための目印。
+# 例：「映画クレヨンしんちゃん...（本編：101分） Crayon Shinchan...」
+SMT_MOVIE_TITLE_PATTERN = re.compile(
+    r"（本編[:：]\s*\d+分）"
 )
 
 
@@ -367,6 +374,122 @@ def extract_humax_schedule_for_date(
                     "料金": 0,
                 }
             )
+
+    return sorted(
+        results,
+        key=lambda row: (
+            row["開始"],
+            row["作品"],
+        ),
+    )
+
+
+def build_smt_schedule_url(
+    theater_name: str,
+    target_date: date,
+) -> str:
+    """
+    SMT系（新宿ピカデリー・MOVIXさいたま等）の
+    日別上映スケジュールHTMLのURLを組み立てる。
+
+    劇場コードが未登録の場合はKeyErrorになる
+    （呼び出し側でSMT_THEATER_CODESに登録済みの
+    劇場だけを対象にすること）。
+    """
+    codes = SMT_THEATER_CODES[theater_name]
+    date_text = target_date.strftime("%Y%m%d")
+
+    return (
+        "https://www.smt-cinema.com/html/site/pc/schedule/"
+        f"{codes['site_code']}_{codes['theater_code']}_"
+        f"{date_text}_schedule_daily_movie_area.html"
+    )
+
+
+def extract_smt_schedule_for_date(
+    html: str,
+    movie_titles: list[str],
+    theater_name: str,
+) -> list[dict]:
+    """
+    SMT系（新宿ピカデリー・MOVIXさいたま等）の
+    日別上映スケジュールHTML
+    （1劇場・1日分に絞り込まれたページ）から、
+    指定作品の上映回を抽出する。
+
+    このHTMLはURL自体が劇場・日付を指定しているため、
+    HUMAXのような日付判定は不要。
+
+    ページ内は
+    「作品タイトル行 → (シアター名行 → 上映時間行)の繰り返し」
+    という順序が保たれているため、
+    行を上から読みながら次の状態を覚えておく方式で読み取る。
+    - 直前に見た作品タイトル（現在対象の作品かどうか）
+    - 直前の行（上映時間行の直前は必ずシアター名行）
+    """
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    wanted_titles = [
+        title.strip()
+        for title in movie_titles
+        if title.strip()
+    ]
+
+    lines = [
+        line.strip()
+        for line in soup.get_text("\n").split("\n")
+        if line.strip()
+    ]
+
+    results = []
+    seen = set()
+    current_matched_title = None
+    previous_line = ""
+
+    for line in lines:
+        if SMT_MOVIE_TITLE_PATTERN.search(line):
+            current_matched_title = _match_requested_title(
+                line,
+                wanted_titles,
+            )
+            previous_line = line
+            continue
+
+        time_match = TIME_RANGE_PATTERN.search(line)
+
+        if (
+            time_match
+            and current_matched_title is not None
+        ):
+            start = time_match.group("start")
+            end = time_match.group("end")
+            screen = previous_line
+
+            key = (
+                current_matched_title,
+                screen,
+                start,
+                end,
+            )
+
+            if key not in seen:
+                seen.add(key)
+
+                results.append(
+                    {
+                        "作品": current_matched_title,
+                        "映画館": theater_name,
+                        "スクリーン": screen,
+                        "開始": start,
+                        "終了": end,
+                        "料金": 0,
+                    }
+                )
+
+        previous_line = line
 
     return sorted(
         results,

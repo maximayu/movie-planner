@@ -4,14 +4,16 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from config import THEATER_URLS
+from config import SMT_THEATER_CODES, THEATER_URLS
 from planner import (
     find_plans,
     prepare_schedule,
     validate_inputs,
 )
 from scraper import (
+    build_smt_schedule_url,
     extract_humax_schedule_for_date,
+    extract_smt_schedule_for_date,
     fetch_theater_page,
 )
 
@@ -44,6 +46,14 @@ if "schedule_df" not in st.session_state:
 # インクリメントし、keyを変えてウィジェットを作り直す。
 if "schedule_editor_version" not in st.session_state:
     st.session_state.schedule_editor_version = 0
+
+# 自動取得に対応している映画館の一覧。
+# HUMAXは専用ページ、それ以外(SMT系)は
+# config.SMT_THEATER_CODESに登録された劇場。
+SUPPORTED_THEATERS = [
+    "池袋HUMAXシネマズ",
+    *SMT_THEATER_CODES.keys(),
+]
 
 
 def show_plans(plans: list[dict]) -> None:
@@ -211,13 +221,14 @@ if search_button:
         unsupported = [
             theater
             for theater in selected_theaters
-            if theater != "池袋HUMAXシネマズ"
+            if theater not in SUPPORTED_THEATERS
         ]
 
         if unsupported:
             st.info(
-                "現在の自動取得対応は"
-                "池袋HUMAXシネマズです。"
+                "現在の自動取得対応は、"
+                f"{'・'.join(SUPPORTED_THEATERS)}"
+                "です。"
             )
 
         auto_rows = []
@@ -227,6 +238,7 @@ if search_button:
             in selected_theaters
         ):
             with st.spinner(
+                "池袋HUMAXシネマズの"
                 "上映情報を取得しています..."
             ):
                 try:
@@ -236,7 +248,7 @@ if search_button:
                         ]
                     )
 
-                    auto_rows = (
+                    humax_rows = (
                         extract_humax_schedule_for_date(
                             page["html"],
                             [movie1, movie2],
@@ -244,12 +256,51 @@ if search_button:
                         )
                     )
 
+                    auto_rows.extend(humax_rows)
+
                 except (
                     requests.RequestException,
                     ValueError,
                 ) as error:
                     st.error(
-                        "上映情報の取得に失敗しました。"
+                        "池袋HUMAXシネマズの"
+                        "上映情報取得に失敗しました。"
+                    )
+                    st.caption(str(error))
+
+        for smt_theater_name in SMT_THEATER_CODES:
+            if smt_theater_name not in selected_theaters:
+                continue
+
+            with st.spinner(
+                f"{smt_theater_name}の"
+                "上映情報を取得しています..."
+            ):
+                try:
+                    smt_url = build_smt_schedule_url(
+                        smt_theater_name,
+                        selected_date,
+                    )
+
+                    page = fetch_theater_page(smt_url)
+
+                    smt_rows = (
+                        extract_smt_schedule_for_date(
+                            page["html"],
+                            [movie1, movie2],
+                            smt_theater_name,
+                        )
+                    )
+
+                    auto_rows.extend(smt_rows)
+
+                except (
+                    requests.RequestException,
+                    ValueError,
+                ) as error:
+                    st.error(
+                        f"{smt_theater_name}の"
+                        "上映情報取得に失敗しました。"
                     )
                     st.caption(str(error))
 
@@ -277,9 +328,8 @@ if search_button:
                 f"{len(editor_rows)}件取得しました。"
             )
 
-        elif (
-            "池袋HUMAXシネマズ"
-            in selected_theaters
+        elif set(selected_theaters) & set(
+            SUPPORTED_THEATERS
         ):
             st.warning(
                 "選択日の上映回を取得できませんでした。"
